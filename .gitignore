@@ -1,0 +1,14 @@
+/target/
+**/*.rs.bk
+
+# USB/HID captures can contain keystrokes from other devices (S2)
+*.pcap
+*.pcapng
+captures/
+
+# Raw, unredacted device dumps (strip serials before turning into fixtures, S8)
+*.raw.bin
+dumps/
+
+# Local tool output
+*.log

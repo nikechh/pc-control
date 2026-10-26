@@ -1,71 +1,186 @@
 # pc-control — Plan
 
 A personal, low-memory Windows tool that replaces vendor peripheral software
-(Logitech G HUB, HyperX NGENUITY, Kingston FURY CTRL) with one small Rust app.
+(Logitech G HUB, HyperX NGENUITY, Kingston FURY CTRL) with a small Rust CLI + GUI.
+
+Reviewed 2026-10-26 (scope reduction chosen). Decision numbers (1A, 2A, …) refer to
+the review; security items are S1–S8. Deferred work lives in [TODOS.md](TODOS.md).
 
 ## Goals
-- Control RGB lighting of RAM (and, for free, GPU + motherboard), mouse settings, and headset settings from one app.
-- **Primary constraint: minimal memory / CPU.** No Electron, no Tauri/webview.
-- Target: 0 MB when closed, < 25 MB with GUI open. Baseline being replaced: G HUB ~280 MB + NGENUITY helper ~85 MB.
+- Switch lighting (RAM, GPU, motherboard) and mouse settings together via presets, without vendor software.
+- **Primary constraint: minimal memory / CPU.** No Electron, no Tauri/webview, no async runtime.
+- Budget: 0 MB of our own when closed; < 25 MB with the GUI open (measured, 15A).
+  Accepted resident cost: OpenRGB service ~31 MB (see TODOS T1).
+- Baseline being replaced: G HUB ~280 MB + NGENUITY helper ~85 MB.
 
 ## Non-goals
 - HyperX Alloy FPS keyboard lighting (firmware/Fn-key only, no host protocol).
-- Cross-platform support (Windows 11 only for now).
-- Distribution to other users.
+- Raw SMBus/PawnIO access from our code (risk of corrupting SPD; OpenRGB owns this).
+- Our own lighting format (OpenRGB profiles are used instead, 1A).
+- Cross-platform support; tray/hotkeys/headset/onboard flash writes in the MVP (see TODOS).
 
 ## Verified environment (2026-10-26)
 | Item | Detail |
 |---|---|
 | OS / CPU / board | Windows 11 Pro, i7-12700, ASUS PRIME Z690-P D4 (Intel i801 SMBus) |
 | RAM | 2x32 GB Kingston FURY Beast RGB DDR4-3200 (box KF432C16BB2A) |
-| Mouse | Logitech PRO X Superlight 2 via LIGHTSPEED receiver `046d:c54d`, device PID `40A9`, receiver slot 1 |
+| Mouse | Logitech PRO X Superlight 2 via LIGHTSPEED receiver `046d:c54d`, device PID `40A9` |
 | Headset | HyperX Cloud III Wireless `03f0:05b7` |
 | Keyboard | HyperX Alloy FPS `0951:16b7` (out of scope) |
-| OpenRGB | v1.1.0, runs as LocalSystem service (~31 MB), SDK on `127.0.0.1:6742`, reachable without admin |
-| PawnIO | 2.2.0 installed; OpenRGB detects "Kingston Fury DDR4 DRAM" (2 zones x 10 LEDs, SMBus 0x59/0x5B), plus GPU (1 LED) and ASUS board |
-| Proven | Own SDK client (PowerShell prototype) set both RAM sticks to solid blue in Direct mode |
+| OpenRGB | 1.1 (`8e16de2`), LocalSystem service, SDK on `127.0.0.1:6742`, reachable without admin. Installer hash matches the official release (S1). |
+| PawnIO | 2.2.0, driver signed by Microsoft WHCP, installer signed by namazso. RAM detected: 2 zones x 10 LEDs, SMBus 0x59/0x5B. GPU (1 LED) and ASUS board also exposed. |
+| Proven | Own SDK client prototype set both RAM sticks to solid blue |
 | Toolchain | Rust 1.99.1 stable MSVC, VS 2022 Build Tools |
-| Running vendor software | G HUB (agent + tray + updater), NGenuity2Helper |
+
+## Step 0 — no code
+1. Save lighting profiles in the OpenRGB GUI; enable `service_startup_profile` so lighting is applied at boot.
+2. Set the mouse's onboard profile once in G HUB, then **uninstall G HUB** (also removes its SYSTEM updater service).
+3. Check whether HeadsetControl supports `03f0:05b7` (decides TODOS T2).
 
 ## Architecture
-- **Language:** Rust, single Cargo workspace.
-- **GUI:** Slint with software renderer (no GPU stack) for lowest RAM.
-- **Model:** "apply settings to devices, then exit." Devices store settings themselves (mouse onboard profiles, RAM controller state, headset settings), so no resident process is needed. Optional tray mode later for headset battery.
-- **RAM/GPU/board lighting:** talk to the existing OpenRGB service over its SDK using our own small, synchronous, std-only TCP client (no tokio, no GPL crate).
-- **Mouse:** Logitech HID++ 2.0 over the receiver via the `hidapi` crate.
-- **Headset:** HID commands to the Cloud III Wireless dongle via `hidapi`.
-- **Profiles:** TOML files (e.g. `%APPDATA%\pc-control\profiles\gaming.toml`) describing the desired state of every device.
 
-### Workspace layout
+### Layout (2 packages)
 ```
 pc-control/
-├── Cargo.toml              (workspace)
-├── crates/
-│   ├── core/               Device trait, Profile (serde + toml), errors
-│   ├── openrgb-client/     sync SDK client: list controllers, modes, set LEDs, update mode
-│   ├── hidpp/              Logitech HID++ 2.0: feature discovery, DPI, report rate, onboard profiles
-│   └── hyperx/             Cloud III Wireless: status, sidetone, auto-off
-├── pcctl/                  CLI: list / set / apply <profile>
-└── app/                    Slint GUI
+├── Cargo.toml          workspace; Cargo.lock committed (S4)
+├── deny.toml           cargo-deny: advisories, licenses, sources (S4)
+├── pcctl/              library + console binary  → pcctl.exe          (4A)
+│   ├── src/
+│   │   ├── lib.rs
+│   │   ├── openrgb.rs  sync std-only SDK client (5A codec, 2A, 6A, 17A)
+│   │   ├── hidpp.rs    Logitech HID++ 2.0 over a Transport trait (3A, 10A)
+│   │   ├── preset.rs   TOML preset: OpenRGB profile name + mouse settings
+│   │   ├── report.rs   per-device outcome + exit code (3A, 7A)
+│   │   └── main.rs     list / set / apply <preset>
+│   └── tests/
+│       ├── fixtures/   bytes captured from the real devices (serials stripped, S8)
+│       └── *.rs        fake OpenRGB server, scripted HID transport
+├── app/                Slint GUI binary → pc-control.exe (thin, 12A)
+│   └── TESTING.md      manual visual checklist
+└── scripts/
+    └── measure-mem.ps1 peak + idle working set (15A)
 ```
 
-## Milestones
-1. **Workspace + lighting (CLI).** Port the PowerShell SDK client to `openrgb-client`. `pcctl list`, `pcctl set ram <hex>`, `pcctl set ram --mode <name>`, `pcctl apply <profile>`. TOML profiles for RAM/GPU/board.
-2. **GUI.** Slint window: device list, color picker per zone, mode dropdown, save/apply profile. Measure RSS against budget.
-3. **Mouse.** HID++ feature discovery; DPI levels (0x2201), report rate (0x8060/0x8061), onboard profiles (0x8100). Requires quitting G HUB. References: Solaar, libratbag source.
-4. **Headset.** Check whether HeadsetControl supports Cloud III Wireless; otherwise capture NGENUITY USB traffic (Wireshark + USBPcap) for sidetone / auto-off / battery. Then uninstall NGENUITY.
-5. **Polish.** Autostart (`pcctl apply default` at login), global hotkeys for profiles, optional tray icon with headset battery, memory verification.
+No shared `Device` trait: the devices have no common shape. The only new abstraction is
+`Transport` (`write` / `read_timeout`), which exists so HID++ logic can be tested (10A).
 
-## Risks
-- **OpenRGB service is still resident (~31 MB).** Possible mitigation: save mode to RAM controller if supported, then stop the service.
-- **Vendor software conflicts:** G HUB / NGENUITY overwrite settings while running.
-- **Undocumented protocols** (HID++ details for Superlight 2, Cloud III Wireless) may change with firmware updates.
-- **SMBus safety:** only ever go through OpenRGB; never write raw SMBus ourselves (risk of corrupting SPD).
-- **GPL:** porting code from OpenRGB/Solaar would make this GPL (acceptable for personal use).
-- **Intel 12th-gen SMBus quirks** could cause intermittent RAM detection.
+### Data flow
+```
+            ┌───────────────── pc-control.exe (Slint, software renderer) ─┐
+            │                                                              │
+pcctl.exe ──┤                    pcctl (lib)                               │
+            │  preset.rs ──► openrgb.rs ──TCP 127.0.0.1:6742──► OpenRGB service (LocalSystem)
+            │      │                                             ├─ PawnIO ─► SMBus ─► RAM x2
+            │      │                                             ├─ NvAPI ──► GPU
+            │      │                                             └─ HID ────► ASUS Aura
+            │      └────► hidpp.rs ──Transport(hidapi)──► receiver 046d:c54d ─(slot)─► Superlight 2
+            │                                                              │
+            │  report.rs ◄── per-device results (ok │ skipped │ unverified │ error)
+            └──────────────────────────────────────────────────────────────┘
+```
+
+### OpenRGB client (`openrgb.rs`)
+```
+connect ─► negotiate version (packet 40; require ≥ 3, else clear error)        2A
+   │
+   ▼
+list controllers ─► decode Controller/Mode/Zone (version-gated codec)           5A
+   │
+   ▼
+resolve target by type (DRAM/GPU/Motherboard) + location, never by index       6A
+   │
+   ▼
+write: load profile (packets 150-152) │ UpdateMode │ UpdateLeds (one per device) 1A
+   │
+   ▼
+verify: re-fetch that controller, compare mode + colors ─► mismatch = unverified 17A
+   ▲
+   └── packet 100 (device list changed) ─► invalidate cache, re-resolve          14A
+```
+- Profiles are listed/saved/loaded **only through the SDK**, never via files (needs no admin; the service owns storage).
+- CLI fetches the controller list once per run; the GUI caches it and invalidates on packet 100.
+- The client treats every server reply as untrusted (S3): max message size 1 MB, every length/count bounds-checked, no panics on malformed input.
+
+### Mouse (`hidpp.rs`)
+- Every run: open only receiver `046d:c54d` on the HID++ vendor interface (S7), ask which slot the mouse is in, ping it.
+- "Asleep/unreachable" is its own outcome (`mouse: asleep, skipped`), never a silent success (3A).
+- Features via HID++ root/feature-set lookup: Adjustable DPI `0x2201`, report rate `0x8060/0x8061`.
+- **Before any mouse code ships, run a spike (8A):** does a host-mode DPI change survive sleep/power-cycle on this mouse?
+  - Survives → simple host-mode writes, apply-and-exit holds.
+  - Reverts → choose between onboard-profile writes (TODOS T4) or a tiny watcher (TODOS T3). Not decided until the spike runs.
+
+### Presets (`preset.rs`)
+```toml
+# %APPDATA%\pc-control\presets\gaming.toml
+openrgb_profile = "gaming"
+[mouse]
+dpi = 1600
+report_rate = 2000
+```
+Parsed with `deny_unknown_fields`; unknown OpenRGB profile names are reported, not ignored.
+
+### GUI (`app/`)
+- Slint with default features **off**: software renderer + Windows backend only, one embedded font (15A).
+- Every action calls a `pcctl` lib function; no logic in the UI layer (12A).
+- Color picker changes are coalesced: latest value wins, max ~20 updates/s per device, one `UpdateLeds` per device (13A).
+
+### Errors and reporting
+- One `thiserror` error type per module; each variant maps to an actionable message, e.g. connection refused → "OpenRGB service isn't running → `Start-Service OpenRGB` (admin)" (7A).
+- Covered cases: service down, protocol too old, RAM missing (PawnIO broke), unknown profile, invalid preset, receiver busy (G HUB), mouse unpaired/asleep, HID++ error codes, write not verified.
+- `pcctl` exit codes: `0` all devices ok, `2` partial, `1` nothing applied.
+
+## Testing
+Built-in `cargo test`, no mocking framework (9A).
+- **Codec:** read → write → compare round-trips against fixture bytes captured from this PC (5A).
+- **Fake OpenRGB server:** in-test `TcpListener` replaying fixtures and simulating every failure branch: refused, version < 3, RAM missing, duplicate match, unknown profile, packet 100 mid-apply, write not reflected (17A), malformed/oversized replies (S3).
+- **HID++:** scripted fake `Transport` covering found / unpaired / asleep / timeout / busy / unsupported feature / error code (10A).
+- **Presets:** valid, missing file, invalid TOML, unknown key, unknown profile.
+- **Reporting:** exit code for all-ok / partial / none.
+- **Hardware tests:** `#[ignore]` **and** `PCCTL_HW=1`; snapshot device state first and restore after; mouse flash writes are never run automatically (11A).
+- **GUI:** manual checklist in `app/TESTING.md` (12A).
+
+## Failure modes
+| Code path | Failure | Test | Handling | Visible |
+|---|---|---|---|---|
+| connect / negotiate | service down, old version | fake server | 7A | clear message |
+| resolve | RAM missing after Windows update | fake server | 7A | clear message |
+| profile load | name typo | fake server | 7A | clear message |
+| any OpenRGB write | SDK has no ACK; write dropped/ignored | fake server | 17A read-back | `unverified` |
+| packet 100 mid-apply | indexes shift | fake server | 6A + 17A | `unverified` |
+| hidpp set | mouse asleep | scripted transport | 3A | `skipped` |
+| hidpp host mode | DPI reverts after sleep | 8A spike | 8A decision | resolved before ship |
+| GUI throttle | final value dropped | manual + lib tests | 13A | visible mismatch |
+| malicious/fake server on 6742 | oversized/malformed reply | fake server | S3 bounds checks | clear error, no crash |
+
+## Performance
+- Memory budget enforced by `scripts/measure-mem.ps1`, run at every milestone (15A).
+- No tokio/async, no GPL crates (`openrgb2` rejected).
+- No per-LED SDK calls; one `UpdateLeds` per device.
+- Check the Kingston mode `flags` for a save-to-device capability as soon as the codec lands (16A → TODOS T1).
+
+## Security
+Threat model: a personal tool on one PC. The main risks are third-party code running as SYSTEM, supply-chain compromise at build time, and data leaking through captures or the public repo.
+
+| # | Rule |
+|---|---|
+| S1 | Install OpenRGB/PawnIO only from official sources and verify (done 2026-10-26: OpenRGB MSI hash matches official; PawnIO signed). Re-verify on every update. |
+| S2 | USB captures (headset work) record only the target device, never while typing passwords; deleted after use; `*.pcap*` is gitignored. |
+| S3 | OpenRGB SDK is unauthenticated: never change `default_host` from `127.0.0.1`; our client treats replies as untrusted (size caps, bounds checks, fuzz tests). |
+| S4 | `Cargo.lock` committed; minimal dependencies; `cargo deny check` (advisories, licenses incl. GPL, sources) before each milestone; verify crate names before adding. |
+| S5 | Build from source. No prebuilt downloads until releases have checksums + artifact attestations (TODOS T7). |
+| S6 | Our binaries never run elevated; autostart via Startup folder or non-elevated scheduled task. |
+| S7 | Open only allow-listed HID devices/interfaces (`046d:c54d` HID++ vendor interface, later `03f0:05b7`); never implement firmware-update commands. |
+| S8 | `.gitignore` for build output and captures; serials stripped from fixtures; repo/account hardening in TODOS T6. |
+
+## Milestones
+0. **Step 0** (no code, above).
+1. **Workspace + lighting CLI:** `openrgb.rs` codec/client, `report.rs`, `pcctl list | set ram <hex> | set ram --mode <name> | apply <preset>`, fake-server tests, `deny.toml`. Check the Kingston save flag (16A).
+2. **Mouse:** 8A spike first, then `hidpp.rs` with discovery, DPI, report rate; scripted-transport tests.
+3. **GUI:** Slint window: device list, color picker per zone (throttled), mode dropdown, preset apply; `measure-mem.ps1` within budget.
+4. **Follow-ups** from TODOS.md, in order of value.
 
 ## Open questions
-- Does the Kingston Fury controller support persisting a mode to the stick (MODE_FLAG_MANUAL_SAVE)?
-- Does HeadsetControl already support `03f0:05b7`?
-- Does the Superlight 2 accept onboard-profile writes when G HUB is uninstalled vs. just closed?
-- Is Slint's royalty-free license fine (personal use → yes, confirm)?
+- Does a host-mode DPI change survive sleep on the Superlight 2? (8A spike)
+- Does the Kingston Fury controller expose a save-to-device mode flag? (16A)
+- Does HeadsetControl support `03f0:05b7`? (Step 0)
+- Slint royalty-free license: confirm it covers this personal use.

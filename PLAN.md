@@ -174,12 +174,15 @@ Threat model: a personal tool on one PC. The main risks are third-party code run
 
 ## Milestones
 0. **Step 0** (no code, above).
-1. **Workspace + lighting CLI:** `openrgb.rs` codec/client, `report.rs`, `pcctl list | set ram <hex> | set ram --mode <name> | apply <preset>`, fake-server tests, `deny.toml`. Check the Kingston save flag (16A).
+1. **Workspace + lighting CLI — done 2026-10-28.** `openrgb.rs` + `openrgb/codec.rs` (protocol 3–5; the service speaks 6, see TODOS T9), `report.rs`, `preset.rs`, `pcctl list | profiles | set <ram|gpu|board> ... | apply <preset>`.
+   - Tests: 43 automated (byte-exact round trips of fixtures captured from this PC, truncation and corruption fuzzing, fake server for every failure branch) + 2 opt-in hardware tests, both passing on the real RAM. Clippy clean with `-D warnings`.
+   - Release `pcctl.exe`: 374 KB; peak working set 4.9 MB, peak private 0.84 MB (`scripts/measure-mem.ps1`).
+   - 16A answered: Kingston Fury modes can't be saved to the sticks (GPU and board can). See TODOS T1.
+   - Confirmed on hardware: loading a profile through the SDK re-applies it.
 2. **Mouse:** 8A spike first, then `hidpp.rs` with discovery, DPI, report rate; scripted-transport tests.
 3. **GUI:** Slint window: device list, color picker per zone (throttled), mode dropdown, preset apply; `measure-mem.ps1` within budget.
 4. **Follow-ups** from TODOS.md, in order of value.
 
 ## Open questions
 - Does a host-mode DPI change survive sleep on the Superlight 2? (8A spike)
-- Does the Kingston Fury controller expose a save-to-device mode flag? (16A)
 - Slint royalty-free license: confirm it covers this personal use.

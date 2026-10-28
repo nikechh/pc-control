@@ -16,7 +16,8 @@ T5–T8 come from the security review (PLAN.md, section "Security").
   3. Switch the `OpenRGB` service to Manual start.
   4. Decide how `pcctl` starts it when needed. Starting a service needs admin unless its permissions are changed with `sc sdset`. If that route is taken, grant **start-only** rights to **your user SID only**, never to Everyone/Users, and never stop/config rights (S6): anything more lets any program control a SYSTEM service.
   If saving is not supported, write down that the 31 MB is the accepted cost.
-- **Depends on / blocked by:** the 5A codec (Milestone 1). It's a cheap check right after the codec lands.
+- **Result (2026-10-28, `pcctl list`):** none of the Kingston Fury modes has a save flag, so lighting **can't** be stored on the sticks. The GPU and ASUS board modes can. Remaining idea: the RAM controller keeps its state until power is cut, so a boot-time SYSTEM scheduled task could start the service, wait for `Loading service_startup_profile` in its log, then stop it. Before trying that, check whether sleep/hibernate resets the RAM LEDs (the service's `resume_profile` exists for that case). Until then the 31 MB service is the accepted cost.
+- **Depends on / blocked by:** nothing (codec check done).
 
 ---
 
@@ -93,3 +94,12 @@ T5–T8 come from the security review (PLAN.md, section "Security").
 - **Why:** Both run with the highest privileges on the machine (SYSTEM service and kernel driver). OpenRGB isn't code-signed and its SDK parser accepts input from any local process, so bug fixes there are security fixes.
 - **Context:** Verified 2026-10-26: OpenRGB 1.1 MSI SHA256 `A4CE48A5E1532750AD4F5248424D42F7F2C710775CEE88DB070CCDB63C549CAA` matches the official download from openrgb.org (which links to codeberg.org/OpenRGB releases; the site publishes no checksums, so compare against a fresh download from that link). PawnIO installer signed by namazso.eu, driver signed by Microsoft WHCP. For updates: download only via openrgb.org / pawnio.eu, check `Get-AuthenticodeSignature` for PawnIO, and compare OpenRGB hashes against a second official download.
 - **Depends on / blocked by:** nothing; recurring.
+
+---
+
+## T9. Support OpenRGB SDK protocol 6
+
+- **What:** Add protocol 6 to the `openrgb` client, alongside 3–5.
+- **Why:** The installed OpenRGB 1.1 speaks protocol 6, which adds an `ACK` packet (10) for writes, `GET_ACTIVE_PROFILE` (156) and `PROFILE_LOADED` (158), and stable unique controller IDs in the packet header. Today `pcctl apply` can't confirm a profile load (it reports "OpenRGB can't confirm profile loads before SDK protocol 6"), and write confirmation relies on reading the controller back (17A).
+- **Context:** Milestone 1 deliberately caps the client at protocol 5 (`codec::MAX_VERSION`), because OpenRGB's SDK documentation still marks protocol 6 as unreleased and its layout changes a lot: `mode_value` and `led_value` are removed, zones gain per-zone modes, controllers gain `display_name` and a configuration blob. Capture v6 fixtures with `cargo run -p pcctl --example capture_fixtures` after raising the version, and keep the round-trip tests byte-exact for both 5 and 6. The hardware test `loading_a_profile_through_the_sdk_changes_the_ram` confirmed that profile loads through the SDK do work today.
+- **Depends on / blocked by:** nothing; nice to have before the GUI shows profile state.

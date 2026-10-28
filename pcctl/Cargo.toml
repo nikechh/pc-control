@@ -1,0 +1,12 @@
+[package]
+name = "pcctl"
+version = "0.1.0"
+description = "Apply lighting and peripheral presets without vendor software"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+toml = { version = "0.8", default-features = false, features = ["parse"] }

@@ -24,12 +24,14 @@ T5–T8 come from the security review (PLAN.md, section "Security").
 
 - **What:** Read battery, mute and charging status, and set sidetone and auto-off, without NGENUITY. Then uninstall NGENUITY.
 - **Why:** The NGenuity2Helper process uses ~85 MB all the time just to expose a handful of headset settings.
-- **Context:** No public reverse-engineering was found for this exact model. The Cloud Flight projects (srn/hyperx-cloud-flight-wireless, flightdeck) target a different device (`0951:16c4`/`0951:1723`) and don't apply. Steps:
-  1. Check whether HeadsetControl (Sapd/HeadsetControl, C, supports Windows) lists `03f0:05b7`. If it does, call it or port its commands.
-  2. If not, record NGENUITY's USB traffic with Wireshark + USBPcap while changing each setting, then replay the reports through the existing `Transport`/hidapi path.
-     **Capture safety (S2):** USBPcap records every device on the same root hub, including the keyboard. Capture only the headset's device address (or move the headset to a root hub without the keyboard), don't type passwords while capturing, save captures under the gitignored `captures/`, and delete them once the commands are documented.
-  Implement it as `pcctl/src/hyperx.rs` with the same tests as the mouse: scripted fake transport, with hardware tests opt-in (`PCCTL_HW=1`).
-- **Depends on / blocked by:** HeadsetControl check (Step 0). The `Transport` trait from 10A.
+- **Context (Step 0 result, 2026-10-28):** HeadsetControl does **not** support this model (its "HyperX Cloud 3" is the wired `03f0:089d`/`03cc`, sidetone on/off only). The protocol is already documented in **LennardKittner/HyperHeadset** (Rust, MIT), `src/devices/cloud_iii_wireless.rs`, so no USB capture is needed.
+  - Packets: 62-byte output reports on **interface 3, usage page `0xFF13`**. Byte 0 = `0x66`, byte 1 = command, byte 2 = parameter. Replies start with `0x66` + the same command.
+  - Get: wireless `0x82`, battery `0x89` (level in byte 4), charging `0x8A`, sidetone on `0x84`, sidetone volume `0x88`, auto-shutdown `0x85` (minutes), mute `0x86`, silent mode `0x87`.
+  - Set: sidetone on `0x01`, auto-shutdown `0x02` (minutes), mute `0x03`, silent mode `0x04`, sidetone volume `0x05`.
+  - **Verified on this headset** with a read-only probe: connected, battery 54%, not charging, sidetone off/0, auto-shutdown 20 min. Plain output reports worked; HaloBattery PR #53 notes some Windows dongles need a feature-report fallback, so keep one.
+  - Set commands are not verified yet; test them with snapshot/restore (11A).
+  Implement it as `pcctl/src/hyperx.rs` on the `Transport` trait, porting the command table (MIT: keep the attribution notice). Same tests as the mouse: scripted fake transport, with hardware tests opt-in (`PCCTL_HW=1`). If a capture is ever needed for an undocumented setting, follow S2: capture only the headset's device address, never type passwords while capturing, use the gitignored `captures/`, and delete afterwards.
+- **Depends on / blocked by:** the `Transport` trait from 10A. (Step 0 check done.)
 
 ---
 
@@ -45,7 +47,7 @@ T5–T8 come from the security review (PLAN.md, section "Security").
 ## T4. Write Superlight 2 onboard profiles (HID++ `0x8100`)
 
 - **What:** Write DPI, report rate and button settings directly into the mouse's onboard profile memory, so they survive sleep and power cycles with no running process.
-- **Why:** This is the only way to get persistent mouse settings with **zero** resident memory if the 8A test shows that host-mode changes (`0x2201` DPI, `0x8061` report rate) are lost when the mouse sleeps.
+- **Why:** This is the only way to get persistent mouse settings with **zero** resident memory if the 8A test shows that host-mode changes (`0x2202` DPI, `0x8061` report rate; this mouse has no `0x2201`) are lost when the mouse sleeps.
 - **Context:** This is the riskiest code in the project: memory-page reads and writes, per-sector checksums, and flash wear. Required safeguards:
   1. Read and back up the full onboard profile area to a file before the first write.
   2. Provide `pcctl mouse restore-backup`.

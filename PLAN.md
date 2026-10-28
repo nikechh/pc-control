@@ -33,9 +33,9 @@ the review; security items are S1–S8. Deferred work lives in [TODOS.md](TODOS.
 | Toolchain | Rust 1.99.1 stable MSVC, VS 2022 Build Tools |
 
 ## Step 0 — no code
-1. Save lighting profiles in the OpenRGB GUI; enable `service_startup_profile` so lighting is applied at boot.
-2. Set the mouse's onboard profile once in G HUB, then **uninstall G HUB** (also removes its SYSTEM updater service).
-3. Check whether HeadsetControl supports `03f0:05b7` (decides TODOS T2).
+1. ~~Save lighting profiles in the OpenRGB GUI; enable `service_startup_profile`~~ **Done 2026-10-28:** profile `default` saved by the service in `service_config\profiles`, startup profile enabled, log confirms it loads at service start.
+2. ~~Set the mouse's onboard profile once in G HUB~~ **Done 2026-10-28:** mouse reports onboard mode. **Still to do:** uninstall G HUB (its SYSTEM updater service is still running).
+3. ~~Check whether HeadsetControl supports `03f0:05b7`~~ **Done 2026-10-28:** HeadsetControl doesn't, but HyperHeadset (Rust, MIT) documents the protocol, and a read-only probe on this headset worked (battery, charging, sidetone, auto-shutdown). No USB capture needed; details in TODOS T2.
 
 ## Architecture
 
@@ -104,7 +104,7 @@ verify: re-fetch that controller, compare mode + colors ─► mismatch = unveri
 ### Mouse (`hidpp.rs`)
 - Every run: open only receiver `046d:c54d` on the HID++ vendor interface (S7), ask which slot the mouse is in, ping it.
 - "Asleep/unreachable" is its own outcome (`mouse: asleep, skipped`), never a silent success (3A).
-- Features via HID++ root/feature-set lookup: Adjustable DPI `0x2201`, report rate `0x8060/0x8061`.
+- Features via HID++ root/feature lookup. **Verified on this mouse (2026-10-28):** Extended Adjustable DPI `0x2202` (index 9), Extended Report Rate `0x8061` (12), Onboard Profiles `0x8100` (13, currently in onboard mode), Unified Battery `0x1004` (6). It does **not** have `0x2201` or `0x8060`. Always look indexes up at runtime; never hard-code them.
 - **Before any mouse code ships, run a spike (8A):** does a host-mode DPI change survive sleep/power-cycle on this mouse?
   - Survives → simple host-mode writes, apply-and-exit holds.
   - Reverts → choose between onboard-profile writes (TODOS T4) or a tiny watcher (TODOS T3). Not decided until the spike runs.
@@ -182,5 +182,4 @@ Threat model: a personal tool on one PC. The main risks are third-party code run
 ## Open questions
 - Does a host-mode DPI change survive sleep on the Superlight 2? (8A spike)
 - Does the Kingston Fury controller expose a save-to-device mode flag? (16A)
-- Does HeadsetControl support `03f0:05b7`? (Step 0)
 - Slint royalty-free license: confirm it covers this personal use.
